@@ -82,7 +82,7 @@ enum SignAlgorithm {
 /// Validates `CK_SIGN_ADDITIONAL_CONTEXT` for `CKM_ML_DSA`
 pub(crate) fn resolve_ml_dsa_context(parameter: &[u8]) -> Result<(), CK_RV> {
     if parameter.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     if parameter.len() != std::mem::size_of::<CK_SIGN_ADDITIONAL_CONTEXT>() {
         return Err(CKR_MECHANISM_PARAM_INVALID.into());
@@ -92,10 +92,22 @@ pub(crate) fn resolve_ml_dsa_context(parameter: &[u8]) -> Result<(), CK_RV> {
     let ctx: CK_SIGN_ADDITIONAL_CONTEXT = unsafe {
         std::ptr::read_unaligned(parameter.as_ptr() as *const CK_SIGN_ADDITIONAL_CONTEXT)
     };
-    if ctx.ulContextLen != 0 || ctx.hedgeVariant == CKH_DETERMINISTIC_REQUIRED as CK_HEDGE_TYPE {
+    if ctx.hedgeVariant == CKH_DETERMINISTIC_REQUIRED as CK_HEDGE_TYPE {
         return Err(CKR_MECHANISM_PARAM_INVALID.into());
     }
-    Ok(())
+    if ctx.ulContextLen == 0 {
+        return Ok(Vec::new());
+    }
+    if ctx.ulContextLen > 255 || ctx.pContext.is_null() {
+        return Err(CKR_MECHANISM_PARAM_INVALID.into());
+    }
+    // SAFETY: pContext/ulContextLen are a second caller-supplied
+    // pointer+length pair, out-of-line from `parameter` itself — same trust
+    // boundary as `parameter` (valid for the duration of this call), same
+    // pattern as `derive.rs`'s `resolve_ecdh1_derive_params`.
+    Ok(unsafe {
+        std::slice::from_raw_parts(ctx.pContext as *const u8, ctx.ulContextLen as usize).to_vec()
+    })
 }
 
 fn ml_dsa_signature_len(parameter_set: MlDsaParameterSet) -> Result<CK_ULONG, CK_RV> {
@@ -221,10 +233,10 @@ pub fn sign_init(
             (KeyType::Ed25519, SignAlgorithm::Eddsa, 64)
         }
         (MechanismKind::MlDsa, PublicKey::MlDsa(k)) => {
-            resolve_ml_dsa_context(parameter)?;
+            let context = resolve_ml_dsa_context(parameter)?;
             let key_type = KeyType::try_from(&public_key.algorithm())
                 .map_err(|_| CK_RV::from(CKR_KEY_TYPE_INCONSISTENT))?;
-            (key_type, SignAlgorithm::MlDsa, ml_dsa_signature_len(k.parameter_set)?)
+            (key_type, SignAlgorithm::MlDsa { context }, ml_dsa_signature_len(k.parameter_set)?)
         }
         _ => return Err(CKR_KEY_TYPE_INCONSISTENT.into()),
     };
@@ -354,8 +366,11 @@ pub fn sign_final(slot: &mut Slot<PivBackend>, h_session: CK_SESSION_HANDLE) -> 
                 .map_err(piv_error_to_rv)?;
             strip_ecdsa_der(&der_sig, curve_byte_len)
         }
-        SignAlgorithm::Eddsa | SignAlgorithm::MlDsa => piv
+        SignAlgorithm::Eddsa => piv
             .sign(state.slot, state.key_type, &message)
+            .map_err(piv_error_to_rv),
+        SignAlgorithm::MlDsa { context } => piv
+            .sign_with_context(state.slot, state.key_type, &message, &context)
             .map_err(piv_error_to_rv),
     }
 }
