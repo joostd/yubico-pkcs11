@@ -27,6 +27,10 @@ pub enum MechanismKind {
     EcdsaHashed(CK_MECHANISM_TYPE),
     Eddsa,
     MlDsa,
+    /// `CKM_ML_DSA_EXTERNAL_MU` (PKCS#11 3.3): the data is the 64-byte
+    /// message representative `mu`, computed by the caller, rather than the
+    /// message itself.
+    MlDsaExternalMu,
 }
 
 pub fn classify_mechanism(mechanism: CK_MECHANISM_TYPE) -> Option<MechanismKind> {
@@ -49,6 +53,7 @@ pub fn classify_mechanism(mechanism: CK_MECHANISM_TYPE) -> Option<MechanismKind>
         CKM_ECDSA_SHA512 => MechanismKind::EcdsaHashed(CKM_SHA512 as CK_MECHANISM_TYPE),
         CKM_EDDSA => MechanismKind::Eddsa,
         CKM_ML_DSA => MechanismKind::MlDsa,
+        CKM_ML_DSA_EXTERNAL_MU => MechanismKind::MlDsaExternalMu,
         _ => return None,
     })
 }

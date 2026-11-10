@@ -15,37 +15,6 @@
  */
 use pkcs11_sys::*;
 
-/// Yubico's vendor-mechanism namespace: `CKM_VENDOR_DEFINED |
-/// YUBICO_BASE_VENDOR`, the exact same convention `objects.rs`'s own
-/// `CKA_YUBICO`/`CKA_YUBICO_TOUCH_POLICY`/`CKA_YUBICO_PIN_POLICY` already
-/// use for vendor *attributes* (mirroring `ykcs11.c`'s own `pkcs11y.h`),
-/// just under `CKM_VENDOR_DEFINED` instead of `CKA_VENDOR_DEFINED` since
-/// this one is a mechanism. No equivalent exists in the C reference, which
-/// defines no vendor mechanisms at all — this one is new, invented here
-/// purely for `CKM_YUBICO_ML_DSA_EXTERNAL_MU`'s sake.
-const YUBICO_BASE_VENDOR: u32 = 0x59554200;
-const CKM_YUBICO: u32 = CKM_VENDOR_DEFINED + YUBICO_BASE_VENDOR;
-
-/// A Yubico vendor-defined mechanism: ML-DSA (FIPS 204) signing over an
-/// externally-computed message representative `mu`, instead of the raw
-/// message (`yubikit::piv::PivSession::sign_external_mu`, tag `0x88` in the
-/// Dynamic Authentication Template — see `sign.rs`'s own doc comment).
-/// PKCS#11 has no standard mechanism for this: `CKM_ML_DSA`'s `C_Sign` data
-/// argument is defined as the message to be signed, with no way to signal
-/// "this is already `mu`, don't touch it", so a distinct mechanism type is
-/// the only way to express the difference without overloading `CKM_ML_DSA`'s
-/// existing, spec-defined meaning. Not part of the shared, standards-focused
-/// `pkcs11_common::mechanism::MechanismKind` enum (unlike `CKM_ML_DSA`
-/// itself) — this is a one-off YubiKey PIV vendor extension with no
-/// cross-module relevance, so `sign.rs`'s `sign_init` checks for it
-/// directly instead. Sign-only: a signature this mechanism produces
-/// verifies with the exact same `CKM_ML_DSA` context-aware verify already
-/// implemented (`verify.rs`'s `verify_ml_dsa`) against the original message
-/// and context `mu` was computed from — there's no corresponding "verify
-/// with mu" operation to add, since the verifier never needs the
-/// constrained-signer's shortcut.
-pub(crate) const CKM_YUBICO_ML_DSA_EXTERNAL_MU: u32 = CKM_YUBICO + 1;
-
 const MIN_RSA_KEY_SIZE: CK_ULONG = 1024;
 const MIN_RSA_KEY_SIZE_6_0: CK_ULONG = 2048;
 const MAX_RSA_KEY_SIZE: CK_ULONG = 2048;
@@ -342,7 +311,7 @@ pub fn mechanism_table(firmware: (u8, u8)) -> Vec<MechanismEntry> {
             flags: CKF_HW as CK_FLAGS | CKF_SIGN as CK_FLAGS | CKF_VERIFY as CK_FLAGS,
         });
         table.push(MechanismEntry {
-            mechanism: CKM_YUBICO_ML_DSA_EXTERNAL_MU.into(),
+            mechanism: CKM_ML_DSA_EXTERNAL_MU.into(),
             min_key_size: 0,
             max_key_size: 0,
             flags: CKF_HW as CK_FLAGS | CKF_SIGN as CK_FLAGS,

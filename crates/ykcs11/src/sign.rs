@@ -77,7 +77,7 @@ enum SignAlgorithm {
     Eddsa,
     /// `CKM_ML_DSA`
     MlDsa { context: Vec<u8> },
-    /// `CKM_YUBICO_ML_DSA_EXTERNAL_MU`
+    /// `CKM_ML_DSA_EXTERNAL_MU`
     MlDsaExternalMu,
 }
 
@@ -154,34 +154,6 @@ pub fn sign_init(
 
     if slot.login_state == LoginState::Public {
         return Err(CKR_USER_NOT_LOGGED_IN.into());
-    }
-
-    // CKM_YUBICO_ML_DSA_EXTERNAL_MU is a Yubico vendor mechanism
-    if mechanism as u32 == crate::mechanisms::CKM_YUBICO_ML_DSA_EXTERNAL_MU {
-        let PublicKey::MlDsa(k) = public_key else {
-            return Err(CKR_KEY_TYPE_INCONSISTENT.into());
-        };
-        // No standard or vendor-defined parameter exists for this
-        // mechanism. The context (if any) is already folded into `mu`
-        // by the caller
-        if !parameter.is_empty() {
-            return Err(CKR_MECHANISM_PARAM_INVALID.into());
-        }
-        let key_type = KeyType::try_from(&public_key.algorithm())
-            .map_err(|_| CK_RV::from(CKR_KEY_TYPE_INCONSISTENT))?;
-        let out_len = ml_dsa_signature_len(k.parameter_set)?;
-
-        let session = slot
-            .sessions
-            .get_mut(&h_session)
-            .ok_or(CK_RV::from(CKR_SESSION_HANDLE_INVALID))?;
-        session.data.sign = Some(SignState {
-            slot: piv_slot,
-            key_type,
-            algo: SignAlgorithm::MlDsaExternalMu,
-            acc: Accumulator::Raw(Vec::new()),
-        });
-        return Ok(out_len);
     }
 
     let Some(mech_kind) = classify_mechanism(mechanism) else {
@@ -268,6 +240,23 @@ pub fn sign_init(
                 .map_err(|_| CK_RV::from(CKR_KEY_TYPE_INCONSISTENT))?;
             (key_type, SignAlgorithm::MlDsa { context }, ml_dsa_signature_len(k.parameter_set)?)
         }
+        (MechanismKind::MlDsaExternalMu, PublicKey::MlDsa(k)) => {
+            // CK_SIGN_ADDITIONAL_CONTEXT is optional here, and the spec
+            // requires `ulContextLen` to be zero: the context, if any, is
+            // already folded into `mu` by the caller. `resolve_ml_dsa_context`
+            // enforces the rest -- struct size, and the device's inability to
+            // honour CKH_DETERMINISTIC_REQUIRED.
+            if !resolve_ml_dsa_context(parameter)?.is_empty() {
+                return Err(CKR_MECHANISM_PARAM_INVALID.into());
+            }
+            let key_type = KeyType::try_from(&public_key.algorithm())
+                .map_err(|_| CK_RV::from(CKR_KEY_TYPE_INCONSISTENT))?;
+            (
+                key_type,
+                SignAlgorithm::MlDsaExternalMu,
+                ml_dsa_signature_len(k.parameter_set)?,
+            )
+        }
         _ => return Err(CKR_KEY_TYPE_INCONSISTENT.into()),
     };
 
@@ -282,7 +271,8 @@ pub fn sign_init(
         | MechanismKind::RsaPssRaw
         | MechanismKind::EcdsaRaw
         | MechanismKind::Eddsa
-        | MechanismKind::MlDsa => Accumulator::Raw(Vec::new()),
+        | MechanismKind::MlDsa
+        | MechanismKind::MlDsaExternalMu => Accumulator::Raw(Vec::new()),
     };
 
     let session = slot

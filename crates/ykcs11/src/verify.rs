@@ -144,6 +144,11 @@ pub fn verify_init(
                 context,
             }
         }
+        // Sign-only: `mechanisms.rs` advertises CKM_ML_DSA_EXTERNAL_MU with
+        // CKF_SIGN and no CKF_VERIFY, so reject it here as an unsupported
+        // mechanism rather than falling through to KEY_TYPE_INCONSISTENT,
+        // which would point the caller at the wrong problem.
+        (MechanismKind::MlDsaExternalMu, _) => return Err(CKR_MECHANISM_INVALID.into()),
         _ => return Err(CKR_KEY_TYPE_INCONSISTENT.into()),
     };
 
@@ -158,7 +163,8 @@ pub fn verify_init(
         | MechanismKind::RsaPssRaw
         | MechanismKind::EcdsaRaw
         | MechanismKind::Eddsa
-        | MechanismKind::MlDsa => Accumulator::Raw(Vec::new()),
+        | MechanismKind::MlDsa
+        | MechanismKind::MlDsaExternalMu => Accumulator::Raw(Vec::new()),
     };
 
     let session = slot
