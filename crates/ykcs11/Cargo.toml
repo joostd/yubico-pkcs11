@@ -35,6 +35,10 @@ yubikit = { git = "https://github.com/Yubico/yubikey-manager.git", tag = "6.0.0-
 # same version yubikit itself already pins as a dev-dependency for its own
 # ML-DSA device tests.
 ml-dsa = "0.1"
+# CKM_ML_DSA_EXTERNAL_MU verification needs to build the `Array<u8, U64>`
+# ml-dsa's own `VerifyingKey::verify_mu` takes as its pre-computed mu
+# argument
+hybrid-array = "0.4"
 # ML-KEM (FIPS 203) host-side encapsulation for C_EncapsulateKey (see
 # encapsulate.rs) -- same version yubikit itself already pins as a
 # dev-dependency for its own ML-KEM device tests.

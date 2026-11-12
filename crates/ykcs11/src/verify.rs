@@ -61,6 +61,10 @@ enum VerifyAlgorithm {
         parameter_set: MlDsaParameterSet,
         context: Vec<u8>,
     },
+    MlDsaExternalMu {
+        key: Vec<u8>,
+        parameter_set: MlDsaParameterSet,
+    },
 }
 
 fn curve_byte_len(curve: EcCurve) -> Result<usize, CK_RV> {
@@ -144,11 +148,17 @@ pub fn verify_init(
                 context,
             }
         }
-        // Sign-only: `mechanisms.rs` advertises CKM_ML_DSA_EXTERNAL_MU with
-        // CKF_SIGN and no CKF_VERIFY, so reject it here as an unsupported
-        // mechanism rather than falling through to KEY_TYPE_INCONSISTENT,
-        // which would point the caller at the wrong problem.
-        (MechanismKind::MlDsaExternalMu, _) => return Err(CKR_MECHANISM_INVALID.into()),
+        (MechanismKind::MlDsaExternalMu, PublicKey::MlDsa(k)) => {
+            // The spec requires ulContextLen == 0 here (context is already folded into mu by
+            // the caller)
+            if !resolve_ml_dsa_context(parameter)?.is_empty() {
+                return Err(CKR_MECHANISM_PARAM_INVALID.into());
+            }
+            VerifyAlgorithm::MlDsaExternalMu {
+                key: k.key.clone(),
+                parameter_set: k.parameter_set,
+            }
+        }
         _ => return Err(CKR_KEY_TYPE_INCONSISTENT.into()),
     };
 
@@ -247,6 +257,9 @@ pub fn verify_final(
         VerifyAlgorithm::MlDsa { key, parameter_set, context } => {
             verify_ml_dsa(parameter_set, &key, &context, &message, signature)
         }
+        VerifyAlgorithm::MlDsaExternalMu { key, parameter_set } => {
+            verify_ml_dsa_external_mu(parameter_set, &key, &message, signature)
+        }
     }
 }
 
@@ -292,6 +305,60 @@ fn verify_ml_dsa(
             let sig = Signature::<MlDsa87>::try_from(signature)
                 .map_err(|_| CK_RV::from(CKR_SIGNATURE_LEN_RANGE))?;
             if vk.verify_with_context(message, context, &sig) {
+                Ok(())
+            } else {
+                Err(CKR_SIGNATURE_INVALID.into())
+            }
+        }
+        _ => Err(CKR_KEY_TYPE_INCONSISTENT.into()),
+    }
+}
+
+fn verify_ml_dsa_external_mu(
+    parameter_set: MlDsaParameterSet,
+    key: &[u8],
+    mu: &[u8],
+    signature: &[u8],
+) -> Result<(), CK_RV> {
+    use hybrid_array::Array;
+    use ml_dsa::common::KeyInit;
+    use ml_dsa::{MlDsa44, MlDsa65, MlDsa87, Signature, VerifyingKey};
+
+    // FIPS 204's external-mu message representative is always exactly 64
+    // bytes, regardless of ML-DSA parameter set (same check sign.rs's
+    // MlDsaExternalMu arm makes on the way in).
+    let mu: [u8; 64] = mu.try_into().map_err(|_| CK_RV::from(CKR_DATA_LEN_RANGE))?;
+    let mu = Array::from(mu);
+
+    match parameter_set {
+        MlDsaParameterSet::MlDsa44 => {
+            let key: &[u8; 1312] = key.try_into().map_err(|_| CK_RV::from(CKR_KEY_HANDLE_INVALID))?;
+            let vk = VerifyingKey::<MlDsa44>::new(key.into());
+            let sig = Signature::<MlDsa44>::try_from(signature)
+                .map_err(|_| CK_RV::from(CKR_SIGNATURE_LEN_RANGE))?;
+            if vk.verify_mu(&mu, &sig) {
+                Ok(())
+            } else {
+                Err(CKR_SIGNATURE_INVALID.into())
+            }
+        }
+        MlDsaParameterSet::MlDsa65 => {
+            let key: &[u8; 1952] = key.try_into().map_err(|_| CK_RV::from(CKR_KEY_HANDLE_INVALID))?;
+            let vk = VerifyingKey::<MlDsa65>::new(key.into());
+            let sig = Signature::<MlDsa65>::try_from(signature)
+                .map_err(|_| CK_RV::from(CKR_SIGNATURE_LEN_RANGE))?;
+            if vk.verify_mu(&mu, &sig) {
+                Ok(())
+            } else {
+                Err(CKR_SIGNATURE_INVALID.into())
+            }
+        }
+        MlDsaParameterSet::MlDsa87 => {
+            let key: &[u8; 2592] = key.try_into().map_err(|_| CK_RV::from(CKR_KEY_HANDLE_INVALID))?;
+            let vk = VerifyingKey::<MlDsa87>::new(key.into());
+            let sig = Signature::<MlDsa87>::try_from(signature)
+                .map_err(|_| CK_RV::from(CKR_SIGNATURE_LEN_RANGE))?;
+            if vk.verify_mu(&mu, &sig) {
                 Ok(())
             } else {
                 Err(CKR_SIGNATURE_INVALID.into())

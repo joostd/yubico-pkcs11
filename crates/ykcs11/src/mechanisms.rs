@@ -314,7 +314,7 @@ pub fn mechanism_table(firmware: (u8, u8)) -> Vec<MechanismEntry> {
             mechanism: CKM_ML_DSA_EXTERNAL_MU.into(),
             min_key_size: 0,
             max_key_size: 0,
-            flags: CKF_HW as CK_FLAGS | CKF_SIGN as CK_FLAGS,
+            flags: CKF_HW as CK_FLAGS | CKF_SIGN as CK_FLAGS | CKF_VERIFY as CK_FLAGS,
         });
     }
 

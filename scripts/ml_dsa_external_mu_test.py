@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
-"""End-to-end test of ykcs11's CKM_YUBICO_ML_DSA_EXTERNAL_MU vendor
-mechanism, using raw ctypes calls against the compiled library (same
-approach as ml_kem_roundtrip.py -- see that script's own module docstring
-for why ctypes rather than python-pkcs11/pkcs11-provider: both of those
-only ever know about standard PKCS#11 mechanisms, and this one is a Yubico
-vendor extension neither has any code path for).
+"""End-to-end test of ykcs11's CKM_ML_DSA_EXTERNAL_MU mechanism, using raw
+ctypes calls against the compiled library (same approach as
+ml_kem_roundtrip.py -- see that script's own module docstring for why
+ctypes rather than python-pkcs11/pkcs11-provider: this mechanism is recent
+enough -- PKCS#11 3.3, OASIS identifier database commit 6edf334 -- that
+neither has a code path for it yet).
+
+CKM_ML_DSA_EXTERNAL_MU used to be reached through a Yubico vendor
+mechanism (CKM_YUBICO_ML_DSA_EXTERNAL_MU, 0xD9554201) because PKCS#11 had
+no standard way to say "this is already mu, don't touch it". It's since
+been replaced by the standard mechanism number (0x403c) -- see
+crates/ykcs11/src/sign.rs and verify.rs. There is no alias for the old
+vendor number; this script only knows the standard one.
 
 Unlike the ML-KEM script, this does NOT import a key first -- it reuses
 whatever ML-DSA key pair already exists on the device (adjust ML_DSA_ID
@@ -19,19 +26,34 @@ What it does:
      yubikit::__internal::padding::ml_dsa_mu implements
      (crates/yubikit/src/__internal/padding.rs:296-322), so no dependency
      on yubikit's own (Rust-only) implementation is needed here.
-  3. C_SignInit/C_Sign with CKM_YUBICO_ML_DSA_EXTERNAL_MU (0xD9554201),
-     passing `mu` as the data to sign.
-  4. Verifies the resulting signature via ykcs11's own already-proven
-     context-aware CKM_ML_DSA verify (C_VerifyInit/C_Verify), against the
-     ORIGINAL message and context -- not mu. If that succeeds, it's
-     definitive proof the external-mu signing path produces a signature
-     that verifies exactly like one FIPS 204's "ExternalMu-ML-DSA.Sign"
-     promises: identical to what signing the full message directly would
-     have produced. No external ML-DSA crypto library needed on the
-     Python side at all.
-  5. Two negative checks: verifying with the wrong context must fail, and
-     signing with a wrong-length mu must be rejected client-side with
-     CKR_DATA_LEN_RANGE (exercising sign.rs's own length check).
+  3. C_SignInit/C_Sign with CKM_ML_DSA_EXTERNAL_MU, passing `mu` as the
+     data to sign.
+  4. Verifies the resulting signature two different ways:
+     a. Indirectly, via ykcs11's context-aware CKM_ML_DSA verify
+        (C_VerifyInit/C_Verify) against the ORIGINAL message and context
+        -- not mu. If that succeeds, it's proof the external-mu signing
+        path produces a signature that verifies exactly like one FIPS
+        204's "ExternalMu-ML-DSA.Sign" promises: identical to what
+        signing the full message directly would have produced.
+     b. Directly, via CKM_ML_DSA_EXTERNAL_MU's own C_Verify, against mu
+        itself -- exercising verify.rs's verify_ml_dsa_external_mu path.
+     No external ML-DSA crypto library is needed on the Python side for
+     either.
+  5. Negative checks:
+     - signing with a wrong-length mu must be rejected client-side with
+       CKR_DATA_LEN_RANGE (exercising sign.rs's own length check);
+     - verifying with the wrong context (indirect, CKM_ML_DSA path) must
+       fail;
+     - verifying directly against the wrong mu, or against a tampered
+       signature, must fail with CKR_SIGNATURE_INVALID;
+     - verifying with a wrong-length mu must be rejected client-side with
+       CKR_DATA_LEN_RANGE (verify.rs's mirror of the sign-side check);
+     - C_VerifyInit with CKM_ML_DSA_EXTERNAL_MU and a non-empty
+       CK_SIGN_ADDITIONAL_CONTEXT must be rejected with
+       CKR_MECHANISM_PARAM_INVALID -- the spec requires ulContextLen == 0
+       for this mechanism (context is already folded into mu by the
+       caller), and verify_init enforces that the same way sign_init
+       does.
 
 Usage:
     cargo build -p ykcs11
@@ -58,12 +80,11 @@ CKA_VALUE = 0x00000011
 CKA_ID = 0x00000102
 CKH_HEDGE_PREFERRED = 0x00000000
 CKM_ML_DSA = 0x0000001D
+CKM_ML_DSA_EXTERNAL_MU = 0x0000403C
 CKR_OK = 0
-
-# Yubico vendor mechanism -- CKM_VENDOR_DEFINED (0x80000000) |
-# YUBICO_BASE_VENDOR (0x59554200), +1 (see mechanisms.rs's own doc
-# comment on CKM_YUBICO_ML_DSA_EXTERNAL_MU for the derivation).
-CKM_YUBICO_ML_DSA_EXTERNAL_MU = 0xD9554201
+CKR_DATA_LEN_RANGE = 0x00000021
+CKR_MECHANISM_PARAM_INVALID = 0x00000071
+CKR_SIGNATURE_INVALID = 0x000000C0
 
 # --- ctypes layer ---
 CK_ULONG = ctypes.c_ulong
@@ -225,8 +246,8 @@ def main() -> None:
     mu = ml_dsa_mu(public_key, context, message)
     print(f"computed mu ({len(mu)} bytes): {mu.hex()}")
 
-    # --- Sign via the new vendor mechanism ---
-    mechanism = CK_MECHANISM(mechanism=CKM_YUBICO_ML_DSA_EXTERNAL_MU, pParameter=None, ulParameterLen=0)
+    # --- Sign via CKM_ML_DSA_EXTERNAL_MU ---
+    mechanism = CK_MECHANISM(mechanism=CKM_ML_DSA_EXTERNAL_MU, pParameter=None, ulParameterLen=0)
     check(lib.C_SignInit(h_session, ctypes.byref(mechanism), h_priv), "C_SignInit (external-mu)")
 
     mu_buf = (ctypes.c_ubyte * len(mu)).from_buffer_copy(mu)
@@ -239,8 +260,8 @@ def main() -> None:
     signature = bytes(sig_buf[: sig_len.value])
     print(f"signed, signature_len={sig_len.value}")
 
-    # --- Verify via the already-proven context-aware CKM_ML_DSA path,
-    # against the ORIGINAL message and context (not mu) ---
+    # --- Verify indirectly via the context-aware CKM_ML_DSA path, against
+    # the ORIGINAL message and context (not mu) ---
     def verify(ctx: bytes, msg: bytes, sig: bytes) -> int:
         # ctx_buf must be a named local, not an inline temporary -- ctypes
         # doesn't keep a pValue/pContext target alive just because a raw
@@ -264,18 +285,77 @@ def main() -> None:
 
     rv = verify(context, message, signature)
     if rv == CKR_OK:
-        print("VERIFIED: external-mu signature verifies against the original message+context")
+        print("VERIFIED (indirect): external-mu signature verifies against the original message+context")
     else:
         raise SystemExit(f"FAILED: signature did not verify (rv=0x{rv:x})")
 
-    # --- Negative check: wrong context must fail verification ---
+    # --- Negative check: wrong context must fail indirect verification ---
     rv = verify(b"wrong context", message, signature)
     if rv != CKR_OK:
-        print(f"OK: verification with the wrong context correctly failed (rv=0x{rv:x})")
+        print(f"OK: indirect verification with the wrong context correctly failed (rv=0x{rv:x})")
     else:
         raise SystemExit("BUG: signature verified with the wrong context")
 
-    # --- Negative check: wrong-length mu must be rejected client-side ---
+    # --- Verify directly via CKM_ML_DSA_EXTERNAL_MU's own C_Verify, against
+    # mu itself -- exercises verify.rs's verify_ml_dsa_external_mu path ---
+    def verify_mu(mu_bytes: bytes, sig: bytes, parameter=None, parameter_len=0) -> int:
+        verify_mechanism = CK_MECHANISM(
+            mechanism=CKM_ML_DSA_EXTERNAL_MU, pParameter=parameter, ulParameterLen=parameter_len
+        )
+        rv = lib.C_VerifyInit(h_session, ctypes.byref(verify_mechanism), h_pub)
+        if rv != CKR_OK:
+            return rv
+        mu_buf2 = (ctypes.c_ubyte * len(mu_bytes)).from_buffer_copy(mu_bytes)
+        sig_buf2 = (ctypes.c_ubyte * len(sig)).from_buffer_copy(sig)
+        return lib.C_Verify(h_session, mu_buf2, len(mu_bytes), sig_buf2, len(sig))
+
+    rv = verify_mu(mu, signature)
+    if rv == CKR_OK:
+        print("VERIFIED (direct): CKM_ML_DSA_EXTERNAL_MU verifies the signature against mu directly")
+    else:
+        raise SystemExit(f"FAILED: direct external-mu verification did not succeed (rv=0x{rv:x})")
+
+    # --- Negative check: direct verification against the wrong mu must fail ---
+    wrong_mu = ml_dsa_mu(public_key, context, message + b" tampered")
+    rv = verify_mu(wrong_mu, signature)
+    if rv == CKR_SIGNATURE_INVALID:
+        print(f"OK: direct verification against the wrong mu correctly failed (rv=0x{rv:x})")
+    else:
+        raise SystemExit(f"BUG: expected CKR_SIGNATURE_INVALID for the wrong mu, got rv=0x{rv:x}")
+
+    # --- Negative check: direct verification of a tampered signature must fail ---
+    tampered_signature = bytes([signature[0] ^ 0x01]) + signature[1:]
+    rv = verify_mu(mu, tampered_signature)
+    if rv == CKR_SIGNATURE_INVALID:
+        print(f"OK: direct verification of a tampered signature correctly failed (rv=0x{rv:x})")
+    else:
+        raise SystemExit(f"BUG: expected CKR_SIGNATURE_INVALID for a tampered signature, got rv=0x{rv:x}")
+
+    # --- Negative check: direct verification with a wrong-length mu must be
+    # rejected client-side, mirroring sign.rs's own check ---
+    rv = verify_mu(mu[:32], signature)
+    if rv == CKR_DATA_LEN_RANGE:
+        print(f"OK: direct verification with a 32-byte (wrong-length) mu correctly failed (rv=0x{rv:x})")
+    else:
+        raise SystemExit(f"BUG: expected CKR_DATA_LEN_RANGE for a wrong-length mu, got rv=0x{rv:x}")
+
+    # --- Negative check: C_VerifyInit with a non-empty CK_SIGN_ADDITIONAL_CONTEXT
+    # must be rejected -- the spec requires ulContextLen == 0 for this mechanism ---
+    ctx_buf = ctypes.create_string_buffer(context, len(context))
+    additional_context = CK_SIGN_ADDITIONAL_CONTEXT(
+        hedgeVariant=CKH_HEDGE_PREFERRED,
+        pContext=ctypes.cast(ctx_buf, ctypes.c_void_p),
+        ulContextLen=len(context),
+    )
+    rv = verify_mu(
+        mu, signature, parameter=ctypes.byref(additional_context), parameter_len=ctypes.sizeof(additional_context)
+    )
+    if rv == CKR_MECHANISM_PARAM_INVALID:
+        print(f"OK: C_VerifyInit with a non-empty context correctly failed (rv=0x{rv:x})")
+    else:
+        raise SystemExit(f"BUG: expected CKR_MECHANISM_PARAM_INVALID for a non-empty context, got rv=0x{rv:x}")
+
+    # --- Negative check: wrong-length mu must be rejected client-side when signing ---
     short_mu = mu[:32]
     check(lib.C_SignInit(h_session, ctypes.byref(mechanism), h_priv), "C_SignInit (short mu)")
     short_buf = (ctypes.c_ubyte * len(short_mu)).from_buffer_copy(short_mu)

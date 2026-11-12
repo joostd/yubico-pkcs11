@@ -90,6 +90,7 @@ fn expected_mechanisms(firmware: (u8, u8)) -> Vec<(CK_MECHANISM_TYPE, CK_ULONG, 
         mechs.push((CKM_ML_KEM_KEY_PAIR_GEN as CK_MECHANISM_TYPE, 0, 0, (CKF_HW | CKF_GENERATE_KEY_PAIR) as CK_FLAGS));
         mechs.push((CKM_ML_KEM as CK_MECHANISM_TYPE, 0, 0, (CKF_HW | CKF_ENCAPSULATE | CKF_DECAPSULATE) as CK_FLAGS));
         mechs.push((CKM_ML_DSA as CK_MECHANISM_TYPE, 0, 0, (CKF_HW | CKF_SIGN | CKF_VERIFY) as CK_FLAGS));
+        mechs.push((CKM_ML_DSA_EXTERNAL_MU as CK_MECHANISM_TYPE, 0, 0, (CKF_HW | CKF_SIGN | CKF_VERIFY) as CK_FLAGS));
     }
     mechs
 }
