@@ -81,6 +81,8 @@ enum SignAlgorithm {
     MlDsaExternalMu,
 }
 
+const MAX_RAW_SIGN_DATA_LEN: usize = 3072;
+
 /// Validates `CK_SIGN_ADDITIONAL_CONTEXT` for `CKM_ML_DSA`
 pub(crate) fn resolve_ml_dsa_context(parameter: &[u8]) -> Result<Vec<u8>, CK_RV> {
     if parameter.is_empty() {
@@ -386,12 +388,20 @@ pub fn sign_final(slot: &mut Slot<PivBackend>, h_session: CK_SESSION_HANDLE) -> 
                 .map_err(piv_error_to_rv)?;
             strip_ecdsa_der(&der_sig, curve_byte_len)
         }
-        SignAlgorithm::Eddsa => piv
-            .sign(state.slot, state.key_type, &message)
-            .map_err(piv_error_to_rv),
-        SignAlgorithm::MlDsa { context } => piv
-            .sign_with_context(state.slot, state.key_type, &message, &context)
-            .map_err(piv_error_to_rv),
+        SignAlgorithm::Eddsa => {
+            if message.len() > MAX_RAW_SIGN_DATA_LEN {
+                return Err(CKR_DATA_LEN_RANGE.into());
+            }
+            piv.sign(state.slot, state.key_type, &message)
+                .map_err(piv_error_to_rv)
+        }
+        SignAlgorithm::MlDsa { context } => {
+            if message.len() + context.len() > MAX_RAW_SIGN_DATA_LEN {
+                return Err(CKR_DATA_LEN_RANGE.into());
+            }
+            piv.sign_with_context(state.slot, state.key_type, &message, &context)
+                .map_err(piv_error_to_rv)
+        }
         SignAlgorithm::MlDsaExternalMu => {
             // FIPS 204's external-mu message representative is always
             // exactly 64 bytes, regardless of ML-DSA parameter set
