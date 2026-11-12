@@ -316,6 +316,17 @@ pub fn mechanism_table(firmware: (u8, u8)) -> Vec<MechanismEntry> {
             max_key_size: 0,
             flags: CKF_HW as CK_FLAGS | CKF_SIGN as CK_FLAGS | CKF_VERIFY as CK_FLAGS,
         });
+        // Computes the mu that CKM_ML_DSA_EXTERNAL_MU consumes. Purely a
+        // host-side SHAKE256 computation over the public key and the
+        // message, so no CKF_HW: the card is never asked to do any of it,
+        // and consequently the message is not subject to the APDU size
+        // limits that bound raw signing.
+        table.push(MechanismEntry {
+            mechanism: CKM_ML_DSA_EXTERNAL_MU_GEN.into(),
+            min_key_size: 0,
+            max_key_size: 0,
+            flags: CKF_DIGEST as CK_FLAGS,
+        });
     }
 
     table

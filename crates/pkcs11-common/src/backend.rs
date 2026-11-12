@@ -230,6 +230,21 @@ pub trait Backend: Sized + 'static {
         Err(CKR_FUNCTION_NOT_SUPPORTED.into())
     }
 
+    /// Give the backend first refusal on `C_DigestInit`, for digest
+    /// mechanisms that need a mechanism parameter or access to objects on
+    /// the token -- neither of which the generic `DigestOp::new` path has.
+    /// Returning `Ok(None)` means "not mine", and the generic mechanisms
+    /// are tried instead, so a backend that does not override this behaves
+    /// exactly as before.
+    fn digest_init(
+        _slot: &mut Slot<Self>,
+        _h_session: CK_SESSION_HANDLE,
+        _mechanism: CK_MECHANISM_TYPE,
+        _parameter: &[u8],
+    ) -> Result<Option<DigestOp>, CK_RV> {
+        Ok(None)
+    }
+
     /// Feed more data into the signing operation started by `sign_init`.
     fn sign_update(
         _slot: &mut Slot<Self>,
@@ -1398,13 +1413,29 @@ impl<B: Backend> Engine<B> {
                 return CKR_ARGUMENTS_BAD.into();
             }
 
-            match DigestOp::new((*p_mechanism).mechanism) {
-                Ok(op) => {
-                    session.digest_op = Some(op);
-                    CKR_OK.into()
-                }
-                Err(rv) => rv,
-            }
+            let mechanism = (*p_mechanism).mechanism;
+            let parameter = if (*p_mechanism).pParameter.is_null() {
+                &[][..]
+            } else {
+                std::slice::from_raw_parts(
+                    (*p_mechanism).pParameter as *const u8,
+                    (*p_mechanism).ulParameterLen as usize,
+                )
+            };
+
+            // The backend gets first refusal; only if it declines do we fall
+            // back to the generic fixed-output mechanisms.
+            let op = match B::digest_init(&mut slot_guard, h_session, mechanism, parameter) {
+                Ok(Some(op)) => op,
+                Ok(None) => match DigestOp::new(mechanism) {
+                    Ok(op) => op,
+                    Err(rv) => return rv,
+                },
+                Err(rv) => return rv,
+            };
+            let session = slot_guard.sessions.get_mut(&h_session).unwrap();
+            session.digest_op = Some(op);
+            CKR_OK.into()
         }
     }
 

@@ -11,6 +11,11 @@ parking_lot = { workspace = true }
 digest = { version = "0.10", features = ["alloc"] }
 sha1 = "0.10"
 sha2 = "0.10"
+# SHAKE256 for the ML-DSA external-mu representative. XOFs live in their own
+# crate now, not in sha3. It rides on digest 0.11, so it is used through its
+# own traits rather than the DynDigest above -- an XOF has no fixed output
+# size to expose there anyway.
+shake = "0.1"
 rsa = { version = "0.9", features = ["hazmat"] }
 p256 = { version = "0.13", features = ["ecdsa"] }
 p384 = { version = "0.13", features = ["ecdsa"] }

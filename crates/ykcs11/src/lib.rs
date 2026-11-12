@@ -25,6 +25,7 @@ mod create_object;
 mod decrypt;
 mod derive;
 mod destroy_object;
+mod digest;
 mod discovery;
 mod encapsulate;
 mod init_token;

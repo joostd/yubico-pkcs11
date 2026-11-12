@@ -296,6 +296,15 @@ impl Backend for PivBackend {
         crate::sign::sign_init(slot, h_session, mechanism, parameter, key_handle)
     }
 
+    fn digest_init(
+        slot: &mut Slot<Self>,
+        _h_session: CK_SESSION_HANDLE,
+        mechanism: CK_MECHANISM_TYPE,
+        parameter: &[u8],
+    ) -> Result<Option<pkcs11_common::digest::DigestOp>, CK_RV> {
+        crate::digest::digest_init(slot, mechanism, parameter)
+    }
+
     fn sign_update(
         slot: &mut Slot<Self>,
         h_session: CK_SESSION_HANDLE,

@@ -17,10 +17,20 @@
 
 use digest::DynDigest;
 use pkcs11_sys::*;
+use shake::digest::{ExtendableOutput, Update, XofReader};
 
 /// One in-progress digest operation.
-pub struct DigestOp {
-    hasher: Box<dyn DynDigest + Send>,
+pub enum DigestOp {
+    /// A conventional fixed-output hash.
+    Fixed(Box<dyn DynDigest + Send>),
+    /// SHAKE256 used as an extendable-output function, squeezing a fixed
+    /// number of bytes at the end. Unlike the fixed hashes this cannot go
+    /// through `DynDigest`, whose output size is a property of the
+    /// algorithm rather than of the operation.
+    Shake256 {
+        hasher: shake::Shake256,
+        output_len: usize,
+    },
 }
 
 impl DigestOp {
@@ -33,19 +43,41 @@ impl DigestOp {
             CKM_SHA512 => Box::new(sha2::Sha512::default()),
             _ => return Err(CKR_MECHANISM_INVALID.into()),
         };
-        Ok(Self { hasher })
+        Ok(Self::Fixed(hasher))
+    }
+
+    /// A SHAKE256 XOF operation that has already absorbed `prefix` and will
+    /// squeeze `output_len` bytes. The caller supplies the prefix because
+    /// the data it is derived from -- a key, say -- is backend-specific.
+    pub fn new_shake256(prefix: &[u8], output_len: usize) -> Self {
+        let mut hasher = shake::Shake256::default();
+        hasher.update(prefix);
+        Self::Shake256 { hasher, output_len }
     }
 
     pub fn update(&mut self, data: &[u8]) {
-        self.hasher.update(data);
+        match self {
+            Self::Fixed(h) => h.update(data),
+            Self::Shake256 { hasher, .. } => Update::update(hasher, data),
+        }
     }
 
     /// The digest's fixed output length calculated from the hash algorithm
     pub fn output_len(&self) -> usize {
-        self.hasher.output_size()
+        match self {
+            Self::Fixed(h) => h.output_size(),
+            Self::Shake256 { output_len, .. } => *output_len,
+        }
     }
 
     pub fn finalize(self) -> Vec<u8> {
-        self.hasher.finalize().into_vec()
+        match self {
+            Self::Fixed(h) => h.finalize().into_vec(),
+            Self::Shake256 { hasher, output_len } => {
+                let mut out = vec![0u8; output_len];
+                hasher.finalize_xof().read(&mut out);
+                out
+            }
+        }
     }
 }
